@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Transcription</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    body {
+      margin: 0;
+      background-color: #f5f5f5;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .main-layout {
+      display: flex;
+      flex-direction: row;
+      width: 80vw;
+      height: 70vh;
+      background: white;
+      border-radius: 1.5rem;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.13);
+      overflow: hidden;
+    }
+    .left-panel {
+      width: 35%;
+      background: linear-gradient(135deg, #f857a6 0%, #ff5858 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      color: white;
+    }
+    .right-panel {
+      width: 65%;
+      padding: 2.5rem 2rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: flex-start;
+      background: #f9f9f9;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 2rem;
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+    #mic {
+      width: 70px;
+      height: 70px;
+      border-radius: 50%;
+      background-color: #fff;
+      margin: 30px 0 30px 0;
+      animation: pulse 1.5s infinite;
+      display: none;
+      box-shadow: 0 0 0 8px rgba(255,255,255,0.2);
+      border: 4px solid #fff;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.15); opacity: 0.7; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .buttons {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: row;
+      gap: 1.2rem;
+    }
+    button {
+      padding: 0.7rem 2.2rem;
+      font-size: 1.1rem;
+      border: none;
+      border-radius: 30px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.3s, color 0.3s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    button#start {
+      background-color: #fff;
+      color: #f857a6;
+      border: 2px solid #fff;
+    }
+    button#start:hover {
+      background-color: #f857a6;
+      color: #fff;
+      border: 2px solid #fff;
+    }
+    button#stop {
+      background-color: #fff;
+      color: #ff5858;
+      border: 2px solid #fff;
+    }
+    button#stop:hover {
+      background-color: #ff5858;
+      color: #fff;
+      border: 2px solid #fff;
+    }
+    button#clear {
+      background-color: #fff;
+      color: #333;
+      border: 2px solid #fff;
+    }
+    button#clear:hover {
+      background-color: #e0e0e0;
+      color: #333;
+      border: 2px solid #fff;
+    }
+    .transcript-title {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 1.2rem;
+      color: #f857a6;
+      letter-spacing: 0.5px;
+    }
+    .transcript-paragraph {
+      font-size: 1.15rem;
+      color: #333;
+      background: #fff;
+      border-radius: 0.7rem;
+      padding: 1.5rem 1.2rem;
+      min-height: 250px;
+      max-height: 50vh;
+      overflow-y: auto;
+      box-shadow: 0 2px 12px rgba(248,87,166,0.07);
+      line-height: 1.7;
+      margin-bottom: 0;
+      width: 100%;
+      word-break: break-word;
+    }
+    @media (max-width: 900px) {
+      .main-layout { flex-direction: column; width: 98vw; height: auto; }
+      .left-panel, .right-panel { width: 100%; }
+      .right-panel { padding: 1.5rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="main-layout">
+    <div class="left-panel">
+      <h1>🎙️ Live Transcription</h1>
+      <div id="mic"></div>
+      <div class="buttons">
+        <button id="start">Start</button>
+        <button id="stop">Stop</button>
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="right-panel">
+      <div class="transcript-title">Transcript</div>
+      <p class="transcript-paragraph" id="transcript"></p>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const socket = io();
+    const startBtn = document.getElementById('start');
+    const stopBtn = document.getElementById('stop');
+    const clearBtn = document.getElementById('clear');
+    const mic = document.getElementById('mic');
+    const transcriptBox = document.getElementById('transcript');
+
+    let audioContext;
+    let mediaStream;
+    let processor;
+    let source;
+    let recording = false;
+    const SAMPLE_RATE = 16000;
+    const CHUNK_SIZE = 0.5; // seconds
+
+    function concatFloat32Arrays(arrays) {
+      let totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+      let result = new Float32Array(totalLength);
+      let offset = 0;
+      for (let arr of arrays) {
+        result.set(arr, offset);
+        offset += arr.length;
+      }
+      return result;
+    }
+
+    function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
+      if (outputSampleRate === inputSampleRate) return buffer;
+      const sampleRateRatio = inputSampleRate / outputSampleRate;
+      const newLength = Math.round(buffer.length / sampleRateRatio);
+      const result = new Float32Array(newLength);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+      while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        let accum = 0, count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+          accum += buffer[i];
+          count++;
+        }
+        result[offsetResult] = count > 0 ? accum / count : 0;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return result;
+    }
+
+    startBtn.addEventListener('click', async () => {
+      if (recording) return;
+      recording = true;
+      transcriptBox.innerHTML = '';
+      socket.emit('start_recording');
+      mic.style.display = 'block';
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+        source = audioContext.createMediaStreamSource(mediaStream);
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        let buffer = [];
+        let lastTime = audioContext.currentTime;
+        processor.onaudioprocess = (e) => {
+          if (!recording) return;
+          const input = e.inputBuffer.getChannelData(0);
+          buffer.push(new Float32Array(input));
+          const now = audioContext.currentTime;
+          if (now - lastTime >= CHUNK_SIZE) {
+            if (buffer.length === 0) return;
+            let flat = concatFloat32Arrays(buffer);
+            let downsampled = downsampleBuffer(flat, audioContext.sampleRate, SAMPLE_RATE);
+            // Remove NaNs and Infs
+            downsampled = downsampled.map(x => (isFinite(x) ? x : 0));
+            socket.emit('audio_segment', Array.from(downsampled));
+            buffer = [];
+            lastTime = now;
+          }
+        };
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+      } catch (err) {
+        alert('Microphone access denied or error: ' + err);
+        recording = false;
+        mic.style.display = 'none';
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!recording) return;
+      recording = false;
+      socket.emit('stop_recording');
+      mic.style.display = 'none';
+      if (processor) processor.disconnect();
+      if (source) source.disconnect();
+      if (audioContext) audioContext.close();
+      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+    });
+
+    clearBtn.addEventListener('click', () => {
+      fullTranscript = "";
+      transcriptBox.textContent = "";
+      socket.emit('clear_transcript');
+    });
+
+    // Only show transcript, no status or extra lines
+    let fullTranscript = "";
+    socket.on('transcript', (data) => {
+      if (data.transcript) {
+        if (fullTranscript.length > 0 && !fullTranscript.endsWith(' ')) fullTranscript += ' ';
+        fullTranscript += data.transcript;
+        transcriptBox.textContent = fullTranscript;
+        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+      }
+    });
+  </script>
+</body>
+</html>
